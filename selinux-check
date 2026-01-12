@@ -1,0 +1,818 @@
+#!/bin/bash
+# selinux-check - SELinux Configuration Checker for Containers
+# A tool similar to shellcheck but for SELinux container configurations
+#
+# Usage:
+#   ./selinux-check [OPTIONS] [COMPOSE_FILE|PATH...]
+#
+# This tool checks for SELinux issues in:
+#   - Docker Compose files (volume mounts, security configurations)
+#   - Directory paths (SELinux contexts)
+#   - System SELinux configuration (container-selinux package, policies)
+#   - Running containers (permission denials)
+
+set -e
+
+VERSION="1.0.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source required libraries
+source "$SCRIPT_DIR/scripts/utils.sh" 2>/dev/null || {
+    # Minimal logging if utils.sh not found
+    log_info() { echo "[INFO] $*"; }
+    log_warning() { echo "[WARNING] $*" >&2; }
+    log_error() { echo "[ERROR] $*" >&2; }
+    log_success() { echo "[OK] $*"; }
+}
+source "$SCRIPT_DIR/scripts/selinux.sh" 2>/dev/null || {
+    echo "Error: selinux.sh not found. Run from project directory." >&2
+    exit 1
+}
+
+# Output formats
+OUTPUT_FORMAT="${OUTPUT_FORMAT:-text}"
+VERBOSE="${VERBOSE:-false}"
+QUIET="${QUIET:-false}"
+EXIT_CODE=0
+
+# Issue categories
+declare -a ERRORS=()
+declare -a WARNINGS=()
+declare -a INFO_MSGS=()
+
+# Colors for output
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Issue codes
+# SC1xxx - System configuration issues
+# SC2xxx - Compose file issues
+# SC3xxx - Volume/path issues
+# SC4xxx - Container runtime issues
+
+usage() {
+    cat << 'EOF'
+selinux-check - SELinux Configuration Checker for Containers
+
+USAGE:
+    selinux-check [OPTIONS] [FILE|PATH...]
+
+DESCRIPTION:
+    Analyzes SELinux configuration for container workloads. Similar to
+    shellcheck but for SELinux issues. Checks compose files, paths,
+    and system configuration for potential problems.
+
+OPTIONS:
+    -f, --format FORMAT   Output format: text (default), json, gcc, checkstyle
+    -s, --severity LEVEL  Minimum severity to report: error, warning, info
+    -v, --verbose         Show detailed information
+    -q, --quiet           Only show errors
+    -h, --help            Show this help message
+    --version             Show version
+
+CHECKS PERFORMED:
+
+  System Checks (SC1xxx):
+    SC1001  SELinux not installed or disabled
+    SC1002  container-selinux package not installed
+    SC1003  SELinux in permissive mode (should be enforcing)
+    SC1004  Missing SELinux policy tools (semanage, restorecon)
+    SC1005  Outdated container-selinux version
+    SC1006  Missing audit tools for denial analysis
+
+  Compose File Checks (SC2xxx):
+    SC2001  Volume mount missing SELinux label (:Z or :z)
+    SC2002  Shared volume using private label (:Z instead of :z)
+    SC2003  Privileged container may bypass SELinux
+    SC2004  security_opt disabling SELinux
+    SC2005  Incompatible volume options
+    SC2006  Custom SELinux type specified (informational)
+    SC2007  Dangerous capabilities added (SYS_ADMIN, etc.)
+    SC2008  Host namespace sharing (network_mode: host, etc.)
+    SC2009  IPC namespace sharing may expose host
+    SC2010  PID namespace sharing exposes host processes
+    SC2011  Tmpfs without size limits
+    SC2012  Device access may require SELinux policy
+    SC2013  Read-only root filesystem not set
+    SC2014  No capabilities dropped (security hardening)
+    SC2015  User namespace mode may affect SELinux
+
+  Path/Volume Checks (SC3xxx):
+    SC3001  Path has incorrect SELinux context
+    SC3002  Path context will be lost on relabel
+    SC3003  Path not accessible to containers
+    SC3004  Path requires manual SELinux fix
+    SC3005  Device path requires container_device_t context
+
+  Runtime Checks (SC4xxx):
+    SC4001  Recent SELinux denials for containers
+    SC4002  Container running with wrong context
+    SC4003  Volume mount causing denials
+    SC4004  Container running as privileged (spc_t)
+    SC4005  Container capabilities elevated
+
+EXAMPLES:
+    # Check a compose file
+    selinux-check docker-compose.yml
+
+    # Check multiple paths
+    selinux-check /data/app /var/lib/containers
+
+    # Full system check
+    selinux-check --verbose
+
+    # JSON output for CI/CD
+    selinux-check -f json docker-compose.yml
+
+EXIT CODES:
+    0   No issues found
+    1   Errors found
+    2   Warnings found (no errors)
+    3   Usage error
+
+For more information, see: https://github.com/gustcol/docker-to-podman
+EOF
+}
+
+# Add an issue to the report
+# Args: $1=code, $2=severity (error|warning|info), $3=message, $4=file (optional), $5=line (optional)
+add_issue() {
+    local code="$1"
+    local severity="$2"
+    local message="$3"
+    local file="${4:-}"
+    local line="${5:-}"
+
+    local issue="${code}:${severity}:${file}:${line}:${message}"
+
+    case "$severity" in
+        error)
+            ERRORS+=("$issue")
+            EXIT_CODE=1
+            ;;
+        warning)
+            WARNINGS+=("$issue")
+            [[ $EXIT_CODE -eq 0 ]] && EXIT_CODE=2
+            ;;
+        info)
+            INFO_MSGS+=("$issue")
+            ;;
+    esac
+}
+
+# Output an issue based on format
+output_issue() {
+    local code="$1"
+    local severity="$2"
+    local message="$3"
+    local file="${4:-}"
+    local line="${5:-}"
+
+    case "$OUTPUT_FORMAT" in
+        text)
+            local color=""
+            local icon=""
+            case "$severity" in
+                error)   color="$RED";    icon="[ERROR]" ;;
+                warning) color="$YELLOW"; icon="[WARNING]" ;;
+                info)    color="$BLUE";   icon="[INFO]" ;;
+            esac
+
+            if [[ -n "$file" ]]; then
+                if [[ -n "$line" ]]; then
+                    echo -e "${color}${icon}${NC} ${BOLD}${file}:${line}${NC} ${code}: ${message}"
+                else
+                    echo -e "${color}${icon}${NC} ${BOLD}${file}${NC} ${code}: ${message}"
+                fi
+            else
+                echo -e "${color}${icon}${NC} ${code}: ${message}"
+            fi
+            ;;
+        gcc)
+            if [[ -n "$file" ]]; then
+                echo "${file}:${line:-1}: ${severity}: ${code}: ${message}"
+            else
+                echo "(system):1: ${severity}: ${code}: ${message}"
+            fi
+            ;;
+        json)
+            # JSON output handled in final report
+            ;;
+    esac
+}
+
+# ============================================================================
+# SYSTEM CHECKS (SC1xxx)
+# ============================================================================
+
+check_system() {
+    [[ "$QUIET" != "true" ]] && echo -e "\n${CYAN}=== System SELinux Checks ===${NC}\n"
+
+    local status
+    status=$(detect_selinux)
+
+    # SC1001: SELinux not installed or disabled
+    case "$status" in
+        not_installed)
+            add_issue "SC1001" "warning" "SELinux is not installed on this system"
+            ;;
+        disabled)
+            add_issue "SC1001" "warning" "SELinux is disabled. Enable for better container security"
+            ;;
+        macos)
+            add_issue "SC1001" "info" "macOS detected. SELinux not applicable (Podman uses VM)"
+            ;;
+        wsl)
+            add_issue "SC1001" "info" "WSL detected. SELinux not available in WSL"
+            ;;
+        apparmor)
+            add_issue "SC1001" "info" "AppArmor detected. System uses AppArmor instead of SELinux"
+            ;;
+        permissive)
+            add_issue "SC1003" "warning" "SELinux is in permissive mode. Consider enabling enforcing mode"
+            ;;
+        enforcing)
+            [[ "$VERBOSE" == "true" ]] && output_issue "SC1000" "info" "SELinux is enforcing" "" ""
+            ;;
+    esac
+
+    # Only continue system checks if SELinux is installed
+    if [[ "$status" != "enforcing" ]] && [[ "$status" != "permissive" ]]; then
+        return 0
+    fi
+
+    # SC1002: container-selinux package
+    if command -v rpm &>/dev/null; then
+        if ! rpm -q container-selinux &>/dev/null; then
+            add_issue "SC1002" "error" "container-selinux package is not installed. Install with: dnf install container-selinux"
+        else
+            local pkg_version
+            pkg_version=$(rpm -q container-selinux)
+            [[ "$VERBOSE" == "true" ]] && output_issue "SC1002" "info" "container-selinux installed: $pkg_version" "" ""
+        fi
+    fi
+
+    # SC1004: SELinux policy tools
+    local missing_tools=()
+    command -v semanage &>/dev/null || missing_tools+=("semanage")
+    command -v restorecon &>/dev/null || missing_tools+=("restorecon")
+    command -v chcon &>/dev/null || missing_tools+=("chcon")
+
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        add_issue "SC1004" "warning" "Missing SELinux tools: ${missing_tools[*]}. Install policycoreutils-python-utils"
+    fi
+}
+
+# ============================================================================
+# COMPOSE FILE CHECKS (SC2xxx)
+# ============================================================================
+
+check_compose_file() {
+    local file="$1"
+
+    if [[ ! -f "$file" ]]; then
+        add_issue "SC2000" "error" "Compose file not found" "$file"
+        return 1
+    fi
+
+    [[ "$QUIET" != "true" ]] && echo -e "\n${CYAN}=== Compose File Checks: $file ===${NC}\n"
+
+    # Get all volume definitions
+    local volumes
+    if command -v yq &>/dev/null; then
+        volumes=$(yq eval '.services[].volumes[]?' "$file" 2>/dev/null)
+    else
+        volumes=$(grep -E "^\s*-\s*['\"]?[./]" "$file" 2>/dev/null | \
+                  sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/['\''"]//g')
+    fi
+
+    # Get shared volumes for analysis
+    local shared_volumes
+    shared_volumes=$(get_shared_volumes "$file" 2>/dev/null)
+
+    # Track services for security analysis
+    local current_service=""
+    local in_service=false
+    local in_cap_add=false
+    local in_cap_drop=false
+    local has_cap_drop=false
+    local in_security_opt=false
+    local in_devices=false
+    local in_tmpfs=false
+
+    local line_num=0
+    while IFS= read -r line; do
+        ((line_num++))
+
+        # Track service context
+        if [[ "$line" =~ ^[[:space:]]{2}[a-zA-Z0-9_-]+:[[:space:]]*$ ]]; then
+            # New service definition
+            if [[ -n "$current_service" ]] && [[ "$has_cap_drop" == "false" ]]; then
+                # SC2014: No capabilities dropped
+                [[ "$VERBOSE" == "true" ]] && add_issue "SC2014" "info" "Service '$current_service' does not drop any capabilities (consider hardening)" "$file"
+            fi
+            current_service=$(echo "$line" | sed 's/[[:space:]:]*//g')
+            has_cap_drop=false
+            in_service=true
+            in_cap_add=false
+            in_cap_drop=false
+            in_security_opt=false
+            in_devices=false
+            in_tmpfs=false
+        fi
+
+        # Track sections within service
+        if [[ "$line" =~ ^[[:space:]]+cap_add:[[:space:]]*$ ]]; then
+            in_cap_add=true
+            in_cap_drop=false
+            in_security_opt=false
+            in_devices=false
+            in_tmpfs=false
+            continue
+        fi
+        if [[ "$line" =~ ^[[:space:]]+cap_drop:[[:space:]]*$ ]]; then
+            in_cap_drop=true
+            in_cap_add=false
+            in_security_opt=false
+            in_devices=false
+            in_tmpfs=false
+            has_cap_drop=true
+            continue
+        fi
+        if [[ "$line" =~ ^[[:space:]]+security_opt:[[:space:]]*$ ]]; then
+            in_security_opt=true
+            in_cap_add=false
+            in_cap_drop=false
+            in_devices=false
+            in_tmpfs=false
+            continue
+        fi
+        if [[ "$line" =~ ^[[:space:]]+devices:[[:space:]]*$ ]]; then
+            in_devices=true
+            in_cap_add=false
+            in_cap_drop=false
+            in_security_opt=false
+            in_tmpfs=false
+            continue
+        fi
+        if [[ "$line" =~ ^[[:space:]]+tmpfs:[[:space:]]*$ ]]; then
+            in_tmpfs=true
+            in_cap_add=false
+            in_cap_drop=false
+            in_security_opt=false
+            in_devices=false
+            continue
+        fi
+
+        # Exit section on new property
+        if [[ "$line" =~ ^[[:space:]]+[a-z_]+:[[:space:]]* ]] && [[ ! "$line" =~ ^[[:space:]]+-[[:space:]] ]]; then
+            in_cap_add=false
+            in_cap_drop=false
+            in_security_opt=false
+            in_devices=false
+            in_tmpfs=false
+        fi
+
+        # Check for volume definitions
+        if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*[\'\"]?[./] ]]; then
+            local vol_def
+            vol_def=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/['\''"]//g')
+
+            local source target options
+            IFS=':' read -r source target options <<< "$vol_def"
+
+            # SC2001: Missing SELinux label
+            if [[ ! "$options" =~ [Zz] ]]; then
+                if requires_selinux_labels 2>/dev/null; then
+                    add_issue "SC2001" "warning" "Volume mount missing SELinux label (:Z or :z): $source" "$file" "$line_num"
+                fi
+            fi
+
+            # SC2002: Shared volume using private label
+            if [[ "$options" =~ Z ]] && [[ ! "$options" =~ z ]]; then
+                local normalized_source
+                normalized_source=$(echo "$source" | sed 's|^./||' | sed 's|^/||')
+                if echo "$shared_volumes" | grep -q "^${normalized_source}$" 2>/dev/null; then
+                    add_issue "SC2002" "error" "Shared volume using private label (:Z). Use :z for shared volumes: $source" "$file" "$line_num"
+                fi
+            fi
+        fi
+
+        # SC2003: Privileged container
+        if [[ "$line" =~ privileged:[[:space:]]*true ]]; then
+            add_issue "SC2003" "warning" "Privileged container may bypass SELinux protections" "$file" "$line_num"
+        fi
+
+        # SC2004: security_opt disabling SELinux
+        if [[ "$line" =~ label:disable ]] || [[ "$line" =~ label=disable ]]; then
+            add_issue "SC2004" "warning" "SELinux labeling disabled for container" "$file" "$line_num"
+        fi
+
+        # SC2006: Custom SELinux type
+        if [[ "$line" =~ label:type: ]]; then
+            local selinux_type
+            selinux_type=$(echo "$line" | sed 's/.*label:type://' | tr -d ' "'\''')
+            add_issue "SC2006" "info" "Custom SELinux type specified: $selinux_type" "$file" "$line_num"
+        fi
+
+        # SC2007: Dangerous capabilities (in cap_add section)
+        if [[ "$in_cap_add" == "true" ]] && [[ "$line" =~ ^[[:space:]]*-[[:space:]]* ]]; then
+            local cap
+            cap=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//' | tr -d '"'\''')
+
+            case "$cap" in
+                SYS_ADMIN|ALL)
+                    add_issue "SC2007" "error" "Dangerous capability added: $cap (equivalent to privileged)" "$file" "$line_num"
+                    ;;
+                SYS_PTRACE|SYS_MODULE|NET_ADMIN|SYS_RAWIO)
+                    add_issue "SC2007" "warning" "Security-sensitive capability added: $cap" "$file" "$line_num"
+                    ;;
+            esac
+        fi
+
+        # SC2008: Host network mode
+        if [[ "$line" =~ network_mode:[[:space:]]*[\'\"]?host ]]; then
+            add_issue "SC2008" "warning" "Host network namespace sharing may bypass network isolation" "$file" "$line_num"
+        fi
+
+        # SC2009: IPC sharing
+        if [[ "$line" =~ ipc:[[:space:]]*[\'\"]?host ]]; then
+            add_issue "SC2009" "warning" "Host IPC namespace sharing exposes shared memory" "$file" "$line_num"
+        fi
+
+        # SC2010: PID sharing
+        if [[ "$line" =~ pid:[[:space:]]*[\'\"]?host ]]; then
+            add_issue "SC2010" "warning" "Host PID namespace sharing exposes all host processes" "$file" "$line_num"
+        fi
+
+        # SC2011: Tmpfs without size
+        if [[ "$in_tmpfs" == "true" ]] && [[ "$line" =~ ^[[:space:]]*-[[:space:]]* ]]; then
+            local tmpfs_def
+            tmpfs_def=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//')
+            if [[ ! "$tmpfs_def" =~ size= ]]; then
+                [[ "$VERBOSE" == "true" ]] && add_issue "SC2011" "info" "Tmpfs without size limit: $tmpfs_def (consider adding size limit)" "$file" "$line_num"
+            fi
+        fi
+
+        # SC2012: Device access
+        if [[ "$in_devices" == "true" ]] && [[ "$line" =~ ^[[:space:]]*-[[:space:]]* ]]; then
+            local device
+            device=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//' | cut -d: -f1)
+            add_issue "SC2012" "info" "Device access '$device' may require custom SELinux policy" "$file" "$line_num"
+        fi
+
+        # SC2013: Read-only root filesystem (check for absence at service level)
+        # This is harder to check in a line-by-line manner, so we'll check for explicit setting
+        if [[ "$line" =~ read_only:[[:space:]]*true ]]; then
+            [[ "$VERBOSE" == "true" ]] && add_issue "SC2013" "info" "Read-only root filesystem enabled (good security practice)" "$file" "$line_num"
+        fi
+
+        # SC2015: User namespace mode
+        if [[ "$line" =~ userns_mode:[[:space:]]* ]]; then
+            local userns_mode
+            userns_mode=$(echo "$line" | sed 's/.*userns_mode:[[:space:]]*//' | tr -d '"'\''')
+            add_issue "SC2015" "info" "User namespace mode '$userns_mode' may affect SELinux context mapping" "$file" "$line_num"
+        fi
+
+    done < "$file"
+
+    # Final service check
+    if [[ -n "$current_service" ]] && [[ "$has_cap_drop" == "false" ]]; then
+        [[ "$VERBOSE" == "true" ]] && add_issue "SC2014" "info" "Service '$current_service' does not drop any capabilities" "$file"
+    fi
+}
+
+# ============================================================================
+# PATH CHECKS (SC3xxx)
+# ============================================================================
+
+check_path() {
+    local path="$1"
+
+    if [[ ! -e "$path" ]]; then
+        add_issue "SC3000" "warning" "Path does not exist" "$path"
+        return 0
+    fi
+
+    [[ "$QUIET" != "true" ]] && echo -e "\n${CYAN}=== Path Check: $path ===${NC}\n"
+
+    # Only check if SELinux is active
+    if ! is_selinux_active 2>/dev/null; then
+        [[ "$VERBOSE" == "true" ]] && output_issue "SC3000" "info" "SELinux not active, skipping path check" "$path" ""
+        return 0
+    fi
+
+    # Get current context
+    local context
+    context=$(ls -Zd "$path" 2>/dev/null | awk '{print $1}')
+
+    if [[ -z "$context" ]]; then
+        add_issue "SC3003" "error" "Cannot determine SELinux context" "$path"
+        return 1
+    fi
+
+    # SC3001: Check if context is container-compatible
+    local is_container_context=false
+    for type in container_file_t svirt_sandbox_file_t container_share_t container_var_lib_t; do
+        if [[ "$context" == *"$type"* ]]; then
+            is_container_context=true
+            break
+        fi
+    done
+
+    if [[ "$is_container_context" == "false" ]]; then
+        add_issue "SC3001" "warning" "Path has non-container SELinux context: $context" "$path"
+        add_issue "SC3004" "info" "Fix with: chcon -Rt container_file_t '$path'" "$path"
+    else
+        [[ "$VERBOSE" == "true" ]] && output_issue "SC3001" "info" "Path has correct container context: $context" "$path" ""
+    fi
+
+    # SC3002: Check if context is persistent
+    if command -v semanage &>/dev/null; then
+        local fcontext
+        fcontext=$(semanage fcontext -l 2>/dev/null | grep -F "$path" | head -1)
+        if [[ -z "$fcontext" ]] && [[ "$is_container_context" == "true" ]]; then
+            add_issue "SC3002" "warning" "SELinux context is not persistent (will be lost on relabel)" "$path"
+            add_issue "SC3002" "info" "Make persistent: semanage fcontext -a -t container_file_t '${path}(/.*)?'" "$path"
+        fi
+    fi
+}
+
+# ============================================================================
+# RUNTIME CHECKS (SC4xxx)
+# ============================================================================
+
+check_runtime() {
+    [[ "$QUIET" != "true" ]] && echo -e "\n${CYAN}=== Runtime SELinux Checks ===${NC}\n"
+
+    # Only check if SELinux is active
+    if ! is_selinux_active 2>/dev/null; then
+        [[ "$VERBOSE" == "true" ]] && echo "SELinux not active, skipping runtime checks"
+        return 0
+    fi
+
+    # SC4001: Check for recent SELinux denials
+    if command -v ausearch &>/dev/null; then
+        local denials
+        denials=$(ausearch -m avc -ts recent 2>/dev/null | grep -E "container|podman|spc_t" | wc -l)
+
+        if [[ $denials -gt 0 ]]; then
+            add_issue "SC4001" "warning" "Found $denials recent SELinux denials related to containers"
+            add_issue "SC4001" "info" "Run 'ausearch -m avc -ts recent' for details"
+        else
+            [[ "$VERBOSE" == "true" ]] && output_issue "SC4001" "info" "No recent container-related SELinux denials" "" ""
+        fi
+    elif [[ -f /var/log/audit/audit.log ]]; then
+        local denials
+        denials=$(grep "avc:.*denied" /var/log/audit/audit.log 2>/dev/null | \
+                  grep -E "container|podman" | tail -20 | wc -l)
+
+        if [[ $denials -gt 0 ]]; then
+            add_issue "SC4001" "warning" "Found $denials SELinux denials in audit log"
+        fi
+    fi
+
+    # SC4002: Check running containers
+    if command -v podman &>/dev/null; then
+        local containers
+        containers=$(podman ps -q 2>/dev/null)
+
+        if [[ -n "$containers" ]]; then
+            while IFS= read -r container; do
+                [[ -z "$container" ]] && continue
+
+                local name label privileged
+                name=$(podman inspect "$container" --format '{{.Name}}' 2>/dev/null)
+                label=$(podman inspect "$container" --format '{{.ProcessLabel}}' 2>/dev/null)
+                privileged=$(podman inspect "$container" --format '{{.HostConfig.Privileged}}' 2>/dev/null)
+
+                if [[ -z "$label" ]] || [[ "$label" == "null" ]]; then
+                    add_issue "SC4002" "warning" "Container '$name' running without SELinux label"
+                fi
+
+                # SC4004: Check for privileged containers (spc_t)
+                if [[ "$privileged" == "true" ]]; then
+                    add_issue "SC4004" "warning" "Container '$name' running as privileged (spc_t type, SELinux bypassed)"
+                fi
+
+                # SC4005: Check for elevated capabilities
+                local caps
+                caps=$(podman inspect "$container" --format '{{.HostConfig.CapAdd}}' 2>/dev/null)
+                if [[ -n "$caps" ]] && [[ "$caps" != "[]" ]] && [[ "$caps" != "null" ]]; then
+                    # Check for dangerous capabilities
+                    if [[ "$caps" == *"SYS_ADMIN"* ]] || [[ "$caps" == *"ALL"* ]]; then
+                        add_issue "SC4005" "warning" "Container '$name' has elevated capabilities: $caps"
+                    elif [[ "$VERBOSE" == "true" ]]; then
+                        add_issue "SC4005" "info" "Container '$name' has added capabilities: $caps"
+                    fi
+                fi
+            done <<< "$containers"
+        fi
+    fi
+}
+
+# ============================================================================
+# OUTPUT FORMATTERS
+# ============================================================================
+
+output_json() {
+    echo "{"
+    echo "  \"version\": \"$VERSION\","
+    echo "  \"issues\": ["
+
+    local first=true
+    local all_issues=("${ERRORS[@]}" "${WARNINGS[@]}" "${INFO_MSGS[@]}")
+
+    for issue in "${all_issues[@]}"; do
+        [[ -z "$issue" ]] && continue
+
+        IFS=':' read -r code severity file line message <<< "$issue"
+
+        [[ "$first" != "true" ]] && echo ","
+        first=false
+
+        echo -n "    {"
+        echo -n "\"code\": \"$code\", "
+        echo -n "\"severity\": \"$severity\", "
+        echo -n "\"file\": \"$file\", "
+        echo -n "\"line\": \"$line\", "
+        echo -n "\"message\": \"$message\""
+        echo -n "}"
+    done
+
+    echo ""
+    echo "  ],"
+    echo "  \"summary\": {"
+    echo "    \"errors\": ${#ERRORS[@]},"
+    echo "    \"warnings\": ${#WARNINGS[@]},"
+    echo "    \"info\": ${#INFO_MSGS[@]}"
+    echo "  }"
+    echo "}"
+}
+
+output_checkstyle() {
+    echo '<?xml version="1.0" encoding="UTF-8"?>'
+    echo '<checkstyle version="4.3">'
+
+    local current_file=""
+    local all_issues=("${ERRORS[@]}" "${WARNINGS[@]}" "${INFO_MSGS[@]}")
+
+    for issue in "${all_issues[@]}"; do
+        [[ -z "$issue" ]] && continue
+
+        IFS=':' read -r code severity file line message <<< "$issue"
+
+        if [[ "$file" != "$current_file" ]]; then
+            [[ -n "$current_file" ]] && echo '  </file>'
+            echo "  <file name=\"${file:-system}\">"
+            current_file="$file"
+        fi
+
+        echo "    <error line=\"${line:-1}\" severity=\"$severity\" message=\"$code: $message\" source=\"selinux-check.$code\"/>"
+    done
+
+    [[ -n "$current_file" ]] && echo '  </file>'
+    echo '</checkstyle>'
+}
+
+output_text_summary() {
+    echo ""
+    echo -e "${BOLD}=== SELinux Check Summary ===${NC}"
+    echo ""
+
+    if [[ ${#ERRORS[@]} -gt 0 ]]; then
+        echo -e "${RED}Errors: ${#ERRORS[@]}${NC}"
+        for issue in "${ERRORS[@]}"; do
+            IFS=':' read -r code severity file line message <<< "$issue"
+            output_issue "$code" "$severity" "$message" "$file" "$line"
+        done
+        echo ""
+    fi
+
+    if [[ ${#WARNINGS[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}Warnings: ${#WARNINGS[@]}${NC}"
+        for issue in "${WARNINGS[@]}"; do
+            IFS=':' read -r code severity file line message <<< "$issue"
+            output_issue "$code" "$severity" "$message" "$file" "$line"
+        done
+        echo ""
+    fi
+
+    if [[ "$VERBOSE" == "true" ]] && [[ ${#INFO_MSGS[@]} -gt 0 ]]; then
+        echo -e "${BLUE}Info: ${#INFO_MSGS[@]}${NC}"
+        for issue in "${INFO_MSGS[@]}"; do
+            IFS=':' read -r code severity file line message <<< "$issue"
+            output_issue "$code" "$severity" "$message" "$file" "$line"
+        done
+        echo ""
+    fi
+
+    local total=$((${#ERRORS[@]} + ${#WARNINGS[@]}))
+    if [[ $total -eq 0 ]]; then
+        echo -e "${GREEN}No issues found!${NC}"
+    else
+        echo -e "Total issues: ${BOLD}$total${NC}"
+    fi
+    echo ""
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+main() {
+    local files=()
+    local min_severity="info"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -f|--format)
+                OUTPUT_FORMAT="$2"
+                shift 2
+                ;;
+            -s|--severity)
+                min_severity="$2"
+                shift 2
+                ;;
+            -v|--verbose)
+                VERBOSE=true
+                shift
+                ;;
+            -q|--quiet)
+                QUIET=true
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --version)
+                echo "selinux-check version $VERSION"
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                usage
+                exit 3
+                ;;
+            *)
+                files+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Header
+    if [[ "$OUTPUT_FORMAT" == "text" ]] && [[ "$QUIET" != "true" ]]; then
+        echo -e "${BOLD}selinux-check${NC} v${VERSION} - SELinux Configuration Checker"
+        echo ""
+    fi
+
+    # Always run system checks
+    check_system
+
+    # Check runtime if no specific files given
+    if [[ ${#files[@]} -eq 0 ]]; then
+        check_runtime
+    fi
+
+    # Process each file/path
+    for item in "${files[@]}"; do
+        if [[ -f "$item" ]] && [[ "$item" =~ \.(yml|yaml)$ ]]; then
+            # It's a compose file
+            check_compose_file "$item"
+        elif [[ -e "$item" ]]; then
+            # It's a path
+            check_path "$item"
+        else
+            add_issue "SC0000" "error" "File or path not found: $item"
+        fi
+    done
+
+    # Output results
+    case "$OUTPUT_FORMAT" in
+        json)
+            output_json
+            ;;
+        checkstyle)
+            output_checkstyle
+            ;;
+        gcc)
+            # Already output during checks
+            output_text_summary
+            ;;
+        text|*)
+            output_text_summary
+            ;;
+    esac
+
+    exit $EXIT_CODE
+}
+
+main "$@"

@@ -1,0 +1,110 @@
+# Complex Multi-Service Application Example
+# A web application with database, cache, and reverse proxy
+
+version: '3.8'
+
+services:
+  # Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - web
+    networks:
+      - frontend
+    restart: always
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Web application
+  web:
+    image: python:3.11-slim
+    command: python -m http.server 8000
+    environment:
+      - DATABASE_URL=postgresql://app:secret@db:5432/appdb
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=false
+    depends_on:
+      - db
+      - redis
+    networks:
+      - frontend
+      - backend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+  # PostgreSQL database
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=app
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=appdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - backend
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d appdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis cache
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Background worker
+  worker:
+    image: python:3.11-slim
+    command: python worker.py
+    environment:
+      - DATABASE_URL=postgresql://app:secret@db:5432/appdb
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    networks:
+      - backend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+  redis_data:
