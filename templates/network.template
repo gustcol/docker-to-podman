@@ -1,0 +1,37 @@
+# Quadlet Network Template
+# Documentation: https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html
+
+[Network]
+# Network name
+NetworkName=%NETWORK_NAME%
+
+# Network driver: bridge, macvlan, ipvlan
+Driver=bridge
+
+# Disable DNS resolution
+# DisableDNS=true
+
+# Gateway address
+# Gateway=10.89.0.1
+
+# Internal network (no external access)
+# Internal=true
+
+# IPv6 support
+# IPv6=true
+
+# IP range for containers
+# IPRange=10.89.0.0/24
+
+# Subnet
+# Subnet=10.89.0.0/24
+
+# Driver options
+# Options=mtu=9000
+# Options=vlan=100
+
+# Labels
+# Label=app=myapp
+
+[Install]
+WantedBy=default.target

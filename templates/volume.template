@@ -1,0 +1,31 @@
+# Quadlet Volume Template
+# Documentation: https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html
+
+[Volume]
+# Volume name
+VolumeName=%VOLUME_NAME%
+
+# Volume driver
+# Driver=local
+
+# Device to mount (for device-backed volumes)
+# Device=/dev/sdb1
+
+# Mount options
+# Options=nodev,noexec
+
+# Volume type
+# Type=tmpfs
+
+# UID for volume ownership
+# User=1000
+
+# GID for volume ownership
+# Group=1000
+
+# Labels
+# Label=app=myapp
+# Label=backup=true
+
+[Install]
+WantedBy=default.target

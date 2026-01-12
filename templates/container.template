@@ -1,0 +1,84 @@
+# Quadlet Container Template
+# Documentation: https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html
+#
+# This is a template file showing all available options.
+# Copy and modify for your needs.
+
+[Unit]
+Description=%SERVICE_NAME% container
+# Add dependencies on other containers
+# After=other-service.service
+# Requires=other-service.service
+
+[Container]
+# Required: Container image
+Image=%IMAGE%
+
+# Container name (optional, defaults to service name)
+ContainerName=%CONTAINER_NAME%
+
+# Published ports (host:container/protocol)
+# PublishPort=8080:80/tcp
+# PublishPort=8443:443/tcp
+
+# Volume mounts
+# Volume=/host/path:/container/path:Z
+# Volume=named-volume:/container/path
+
+# Environment variables
+# Environment=KEY=value
+# EnvironmentFile=/path/to/env/file
+
+# Network configuration
+# Network=mynetwork.network
+# Network=host
+# Network=none
+
+# Health check
+# HealthCmd=curl -f http://localhost/ || exit 1
+# HealthInterval=30s
+# HealthTimeout=10s
+# HealthRetries=3
+# HealthStartPeriod=10s
+
+# Resource limits
+# PodmanArgs=--memory=512m
+# PodmanArgs=--cpus=1.0
+
+# Security options
+# SecurityLabelDisable=true
+# ReadOnly=true
+# NoNewPrivileges=true
+
+# User mapping
+# User=1000:1000
+# UserNS=keep-id
+
+# Labels
+# Label=app=myapp
+# Label=environment=production
+
+# Entrypoint and command
+# Entrypoint=/custom/entrypoint.sh
+# Exec=arg1 arg2 arg3
+
+# Logging
+# LogDriver=journald
+
+# Auto-update from registry
+AutoUpdate=registry
+
+[Service]
+# Restart policy: no, on-success, on-failure, on-abnormal, on-watchdog, on-abort, always
+Restart=on-failure
+RestartSec=10
+
+# Timeout for container start
+TimeoutStartSec=300
+
+# Stop timeout
+TimeoutStopSec=30
+
+[Install]
+# Enable auto-start
+WantedBy=default.target
