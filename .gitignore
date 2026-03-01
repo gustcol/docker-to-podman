@@ -10,5 +10,4 @@ tests/output/
 *.swo
 *~
 
-# Claude Code
-.claude/
+
