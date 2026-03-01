@@ -492,7 +492,7 @@ is_volume_shared() {
 
     # Count how many services use this volume
     if command -v yq &>/dev/null; then
-        count=$(yq eval ".services[].volumes[]? | select(. == \"*${normalized_path}*\") | ." "$compose_file" 2>/dev/null | wc -l)
+        count=$(yq eval ".services[].volumes[]? | select(contains(\"${normalized_path}\")) | ." "$compose_file" 2>/dev/null | wc -l)
     else
         # Fallback: grep-based detection
         count=$(grep -E "^\s*-\s*['\"]?[./]*${normalized_path}" "$compose_file" 2>/dev/null | wc -l)

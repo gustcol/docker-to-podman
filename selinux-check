@@ -148,7 +148,7 @@ add_issue() {
     local file="${4:-}"
     local line="${5:-}"
 
-    local issue="${code}:${severity}:${file}:${line}:${message}"
+    local issue="${code}|${severity}|${file}|${line}|${message}"
 
     case "$severity" in
         error)
@@ -383,8 +383,8 @@ check_compose_file() {
             local vol_def
             vol_def=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/['\''"]//g')
 
-            local source target options
-            IFS=':' read -r source target options <<< "$vol_def"
+            local source _target options
+            IFS=':' read -r source _target options <<< "$vol_def"
 
             # SC2001: Missing SELinux label
             if [[ ! "$options" =~ [Zz] ]]; then
@@ -631,7 +631,7 @@ output_json() {
     for issue in "${all_issues[@]}"; do
         [[ -z "$issue" ]] && continue
 
-        IFS=':' read -r code severity file line message <<< "$issue"
+        IFS='|' read -r code severity file line message <<< "$issue"
 
         [[ "$first" != "true" ]] && echo ","
         first=false
@@ -665,7 +665,7 @@ output_checkstyle() {
     for issue in "${all_issues[@]}"; do
         [[ -z "$issue" ]] && continue
 
-        IFS=':' read -r code severity file line message <<< "$issue"
+        IFS='|' read -r code severity file line message <<< "$issue"
 
         if [[ "$file" != "$current_file" ]]; then
             [[ -n "$current_file" ]] && echo '  </file>'
@@ -688,7 +688,7 @@ output_text_summary() {
     if [[ ${#ERRORS[@]} -gt 0 ]]; then
         echo -e "${RED}Errors: ${#ERRORS[@]}${NC}"
         for issue in "${ERRORS[@]}"; do
-            IFS=':' read -r code severity file line message <<< "$issue"
+            IFS='|' read -r code severity file line message <<< "$issue"
             output_issue "$code" "$severity" "$message" "$file" "$line"
         done
         echo ""
@@ -697,7 +697,7 @@ output_text_summary() {
     if [[ ${#WARNINGS[@]} -gt 0 ]]; then
         echo -e "${YELLOW}Warnings: ${#WARNINGS[@]}${NC}"
         for issue in "${WARNINGS[@]}"; do
-            IFS=':' read -r code severity file line message <<< "$issue"
+            IFS='|' read -r code severity file line message <<< "$issue"
             output_issue "$code" "$severity" "$message" "$file" "$line"
         done
         echo ""
@@ -706,7 +706,7 @@ output_text_summary() {
     if [[ "$VERBOSE" == "true" ]] && [[ ${#INFO_MSGS[@]} -gt 0 ]]; then
         echo -e "${BLUE}Info: ${#INFO_MSGS[@]}${NC}"
         for issue in "${INFO_MSGS[@]}"; do
-            IFS=':' read -r code severity file line message <<< "$issue"
+            IFS='|' read -r code severity file line message <<< "$issue"
             output_issue "$code" "$severity" "$message" "$file" "$line"
         done
         echo ""

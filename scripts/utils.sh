@@ -63,7 +63,9 @@ check_dependencies() {
     local minor_version
     minor_version=$(echo "$podman_version" | cut -d. -f2)
 
-    if [[ "$major_version" -lt 4 ]] || [[ "$major_version" -eq 4 && "$minor_version" -lt 4 ]]; then
+    if [[ -z "$podman_version" ]]; then
+        log_warning "Could not determine Podman version"
+    elif [[ "$major_version" -lt 4 ]] || [[ "$major_version" -eq 4 && "$minor_version" -lt 4 ]]; then
         log_warning "Podman version $podman_version detected. Quadlet requires Podman 4.4+."
         log_warning "Some features may not work correctly."
     else
@@ -153,6 +155,10 @@ parse_memory() {
     value="${mem//[^0-9.]/}"
     unit="${mem//[0-9.]/}"
     unit=$(printf '%s' "$unit" | tr '[:upper:]' '[:lower:]')
+
+    # Truncate to integer for bash arithmetic (handles values like 1.5g)
+    value="${value%%.*}"
+    [[ -z "$value" ]] && value=0
 
     case "$unit" in
         b|"")   echo "$value" ;;

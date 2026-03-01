@@ -101,10 +101,12 @@ Docker Compose                    Podman Quadlet
 
 | Component | Version | Required |
 |-----------|---------|----------|
-| Podman | 4.4+ | Yes |
-| Bash | 3.2+ | Yes |
-| systemd | Any | Yes |
-| yq | 4.0+ | Optional (recommended) |
+| Podman | 4.4+ (tested up to 5.8) | Yes |
+| Bash | 4.0+ | Yes |
+| systemd | 245+ | Yes |
+| yq | 4.0+ (latest: 4.52) | Optional (recommended) |
+| Helm | 3.x or 4.x | Optional (for Helm chart generation) |
+| kubectl | 1.28+ | Optional (for Kubernetes manifests) |
 
 ### Installing Dependencies
 
@@ -2214,6 +2216,30 @@ docker-to-podman/
 
 ---
 
+## Compatibility Notes
+
+### Podman Version Support
+
+| Podman Version | Support Level | Notes |
+|----------------|---------------|-------|
+| 4.4 - 4.9 | Full | Minimum version for Quadlet support |
+| 5.0 - 5.8 | Full | CNI removed; Netavark is the default network backend |
+| 6.0+ (upcoming) | Planned | BoltDB removed; SQLite only. Run `podman system migrate --migrate-db` before upgrading |
+
+### Helm Version Support
+
+This tool generates Helm v2 chart format (apiVersion: v1) compatible with both Helm 3.x and Helm 4.x. Helm 4 introduced WebAssembly plugins and Server-Side Apply as default, but remains backward compatible with v2 charts.
+
+### Kubernetes Compatibility
+
+Generated manifests target Kubernetes 1.25+ and use standard `apps/v1` API versions. For clusters running Kubernetes 1.35+, in-place pod resource updates are available as a GA feature.
+
+### Docker Compose File Support
+
+Supports Docker Compose file format versions 2.x and 3.x, compatible with Docker Compose CLI v2 through v5.
+
+---
+
 ## Contributing
 
 ### Development Setup
@@ -2274,6 +2300,7 @@ MIT License - See [LICENSE](LICENSE) file for details.
 
 - [podman-compose](https://github.com/containers/podman-compose) - Docker Compose compatible tool for Podman
 - [Podman Desktop](https://podman-desktop.io/) - GUI for Podman
+- [Podlet](https://github.com/containers/podlet) - Generate Quadlet files from Podman commands or Compose files
 
 ---
 

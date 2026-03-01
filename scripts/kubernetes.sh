@@ -469,10 +469,11 @@ EOF
 
     if [[ -n "$command" ]]; then
         echo "          args:" >> "$output_file"
-        # Split command into array
-        for arg in $command; do
+        # Split command into arguments
+        while IFS= read -r arg; do
+            [[ -z "$arg" ]] && continue
             echo "            - \"${arg}\"" >> "$output_file"
-        done
+        done <<< "$(printf '%s\n' $command)"
     fi
 
     # Add ports
@@ -519,7 +520,9 @@ EOF
         if [[ -n "$memory" ]]; then
             local mem_val="${memory%[mMgGkK]*}"
             local mem_unit="${memory##*[0-9]}"
-            echo "              memory: $((mem_val / 2))${mem_unit}i" >> "$output_file"
+            mem_unit=$(printf '%s' "$mem_unit" | tr '[:lower:]' '[:upper:]')
+            local half_val=$(( mem_val > 1 ? mem_val / 2 : 1 ))
+            echo "              memory: ${half_val}${mem_unit}i" >> "$output_file"
         fi
         if [[ -n "$cpus" ]]; then
             echo "              cpu: $(convert_cpu_k8s "0.25")" >> "$output_file"

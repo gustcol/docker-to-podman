@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Test artifacts
+tests/fixtures/
+tests/output/
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/

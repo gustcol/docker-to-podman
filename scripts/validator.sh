@@ -538,5 +538,6 @@ validate_ports_available() {
         log_warning "Found $conflicts port conflict(s)"
     fi
 
-    return $conflicts
+    [[ $conflicts -gt 0 ]] && return 1
+    return 0
 }
