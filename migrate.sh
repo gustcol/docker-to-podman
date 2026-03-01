@@ -389,13 +389,13 @@ do_migrate() {
         echo "  # Copy files to Quadlet directory"
         if [[ "$MODE" == "user" ]]; then
             echo "  mkdir -p ~/.config/containers/systemd"
-            echo "  cp $OUTPUT_DIR/*.{container,network,volume} ~/.config/containers/systemd/"
+            echo "  cp \"${OUTPUT_DIR}\"/*.{container,network,volume} ~/.config/containers/systemd/"
             echo ""
             echo "  # Reload and start"
             echo "  systemctl --user daemon-reload"
             echo "  systemctl --user start ${PROJECT_NAME}-<service>.service"
         else
-            echo "  sudo cp $OUTPUT_DIR/*.{container,network,volume} /etc/containers/systemd/"
+            echo "  sudo cp \"${OUTPUT_DIR}\"/*.{container,network,volume} /etc/containers/systemd/"
             echo ""
             echo "  # Reload and start"
             echo "  sudo systemctl daemon-reload"
@@ -685,13 +685,13 @@ main() {
             do_selinux_validate
             ;;
         selinux-fix)
-            do_selinux_fix
+            do_selinux_fix "$@"
             ;;
         selinux-analyze)
             do_selinux_analyze
             ;;
         selinux-denials)
-            do_selinux_denials
+            do_selinux_denials "$@"
             ;;
         selinux-info)
             do_selinux_info

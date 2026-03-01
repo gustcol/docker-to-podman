@@ -132,8 +132,11 @@ EOF
     if [[ -n "$security_opt" ]]; then
         while IFS= read -r opt; do
             [[ -z "$opt" ]] && continue
-            echo "SecurityLabelType=${opt#label:type:}" >> "$output_file" 2>/dev/null || \
-            echo "PodmanArgs=--security-opt=${opt}" >> "$output_file"
+            if [[ "$opt" == label:type:* ]]; then
+                echo "SecurityLabelType=${opt#label:type:}" >> "$output_file"
+            else
+                echo "PodmanArgs=--security-opt=${opt}" >> "$output_file"
+            fi
         done <<< "$security_opt"
     fi
 
@@ -588,6 +591,8 @@ EOF
                 [[ -z "$env" ]] && continue
                 local key="${env%%=*}"
                 local value="${env#*=}"
+                value="${value//\\/\\\\}"
+                value="${value//\"/\\\"}"
                 echo "      ${key}: \"${value}\"" >> "$output_file"
             done <<< "$env_list"
         fi
