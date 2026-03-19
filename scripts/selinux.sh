@@ -491,8 +491,8 @@ is_volume_shared() {
     normalized_path=$(echo "$volume_path" | sed 's|^./||' | sed 's|^/||')
 
     # Count how many services use this volume
-    if command -v yq &>/dev/null; then
-        count=$(yq eval ".services[].volumes[]? | select(contains(\"${normalized_path}\")) | ." "$compose_file" 2>/dev/null | wc -l)
+    if [[ "${USE_YQ:-0}" == "1" ]]; then
+        count=$(yq -r '.services[].volumes[]?' "$compose_file" 2>/dev/null | grep -c "${normalized_path}" || echo 0)
     else
         # Fallback: grep-based detection
         count=$(grep -E "^\s*-\s*['\"]?[./]*${normalized_path}" "$compose_file" 2>/dev/null | wc -l)
@@ -515,8 +515,8 @@ get_shared_volumes() {
 
     # Extract all volume mounts
     local volumes
-    if command -v yq &>/dev/null; then
-        volumes=$(yq eval '.services[].volumes[]?' "$compose_file" 2>/dev/null)
+    if [[ "${USE_YQ:-0}" == "1" ]]; then
+        volumes=$(yq -r '.services[].volumes[]?' "$compose_file" 2>/dev/null)
     else
         volumes=$(grep -E "^\s*-\s*['\"]?[./]" "$compose_file" 2>/dev/null | sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/['\''"]//g')
     fi
@@ -643,8 +643,8 @@ validate_compose_volumes() {
 
     # Extract bind mount paths
     local volumes
-    if command -v yq &>/dev/null; then
-        volumes=$(yq eval '.services[].volumes[]?' "$compose_file" 2>/dev/null)
+    if [[ "${USE_YQ:-0}" == "1" ]]; then
+        volumes=$(yq -r '.services[].volumes[]?' "$compose_file" 2>/dev/null)
     else
         volumes=$(grep -E "^\s*-\s*['\"]?[./]" "$compose_file" 2>/dev/null | \
                   sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/['\''"]//g')
@@ -899,8 +899,8 @@ fix_compose_volumes() {
 
     # Extract bind mount paths
     local volumes
-    if command -v yq &>/dev/null; then
-        volumes=$(yq eval '.services[].volumes[]?' "$compose_file" 2>/dev/null)
+    if [[ "${USE_YQ:-0}" == "1" ]]; then
+        volumes=$(yq -r '.services[].volumes[]?' "$compose_file" 2>/dev/null)
     else
         volumes=$(grep -E "^\s*-\s*['\"]?[./]" "$compose_file" 2>/dev/null | \
                   sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/['\''"]//g')
